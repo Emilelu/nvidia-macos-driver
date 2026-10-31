@@ -162,3 +162,49 @@ jobs:
         with:
           name: NVRMFB-kexts-issue220
           path: artifact/
+
+  # Full release-style package: official 2.6.5 tarball with the fixed NVRMFB
+  # swapped in (NVRM/NVKMS stay stock - they need the maintainer's chain) and
+  # SHA256SUMS regenerated so install.sh's --strict check still passes.
+  full-package:
+    runs-on: ubuntu-latest
+    needs: [nvrmfb-build]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: NVRMFB-kexts-issue220
+          path: kexts
+      - name: Download the official 2.6.5 package
+        run: |
+          curl -fsSL --retry 3 -o pkg.tar.gz \
+            https://github.com/nullmoth/nvidia-macos-driver/releases/download/v2.6.5/nullmoth-nvidia-2.6.5.tar.gz
+          sha256sum pkg.tar.gz
+      - name: Swap the fixed NVRMFB.kext in and repackage
+        run: |
+          set -e
+          mkdir pkg && tar xzf pkg.tar.gz -C pkg
+          cp pkg/pkgroot/SHA256SUMS sha-orig.txt
+          rm -rf pkg/pkgroot/Library/Extensions/NVRMFB.kext
+          cp -R kexts/NVRMFB-macos15.kext pkg/pkgroot/Library/Extensions/NVRMFB.kext
+          # regenerate the manifest exactly the way the original was built:
+          # regular files AND symlinks (shasum follows links), relative paths, sorted
+          (cd pkg/pkgroot && find . \( -type f -o -type l \) ! -name SHA256SUMS \
+            | sed 's|^\./||' | sort | xargs sha256sum > SHA256SUMS)
+          # gate: only NVRMFB lines may differ from the official manifest
+          if diff sha-orig.txt pkg/pkgroot/SHA256SUMS | grep -v 'NVRMFB' | grep -Eq '^[<>]'; then
+            echo "unexpected manifest drift outside NVRMFB:" >&2
+            diff sha-orig.txt pkg/pkgroot/SHA256SUMS >&2
+            exit 1
+          fi
+          (cd pkg/pkgroot && sha256sum -c --strict --quiet SHA256SUMS)
+          chmod -R u+rwX,go+rX pkg/pkgroot
+          chmod 755 pkg/pkgroot/install.sh
+          find pkg/pkgroot -name '*.sh' -type f -exec chmod 755 {} +
+          find pkg/pkgroot -path '*Contents/MacOS/*' -type f -exec chmod 755 {} +
+          tar czf nullmoth-nvidia-2.6.5-issue220-fix.tar.gz -C pkg pkgroot
+          ls -la nullmoth-nvidia-2.6.5-issue220-fix.tar.gz
+      - name: Upload the full installer package
+        uses: actions/upload-artifact@v4
+        with:
+          name: nullmoth-nvidia-2.6.5-issue220-fix
+          path: nullmoth-nvidia-2.6.5-issue220-fix.tar.gz
