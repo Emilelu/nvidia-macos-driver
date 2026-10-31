@@ -1,0 +1,77 @@
+# Checks for the issue #220 workaround branch (fork-only; the upstream repo has no CI).
+# The full driver build needs the maintainer's local NVIDIA Darwin modeset archive and
+# compile commands, which cannot run here. These jobs check what can be checked:
+# the refusal-helper regressions the repo ships, and that the 615.78.08 set-mode
+# reason patch applies cleanly, plus a syntax pass over the framebuffer kext source.
+name: issue-220 checks
+
+on:
+  push:
+    branches: [ "fix/issue-220-nvkms-mode-reject" ]
+  workflow_dispatch:
+
+jobs:
+  refusal-helpers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Repo regression tests over the refusal helpers and call sites
+        run: python3 tools/test_refusal_reasons.py
+
+  patch-615-setmode-reason:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the NVIDIA 615.78.08 NVKMS KAPI source
+        run: |
+          mkdir -p ogkm/kapi/src
+          curl -fsSL --retry 3 \
+            https://raw.githubusercontent.com/NVIDIA/open-gpu-kernel-modules/615.78.08/src/nvidia-modeset/kapi/src/nvkms-kapi.c \
+            -o ogkm/kapi/src/nvkms-kapi.c
+          wc -l ogkm/kapi/src/nvkms-kapi.c
+      - name: Apply 615-setmode-reason.patch and confirm the reason lines land
+        run: |
+          cd ogkm
+          patch -p0 --dry-run < ../kexts/NVRM/patches/615-setmode-reason.patch
+          patch -p0 < ../kexts/NVRM/patches/615-setmode-reason.patch
+          echo "reason lines: $(grep -c '\[kapi\] set mode' kapi/src/nvkms-kapi.c)"
+          grep -n '\[kapi\] set mode' kapi/src/nvkms-kapi.c
+          test "$(grep -c '\[kapi\] set mode' kapi/src/nvkms-kapi.c)" -eq 2
+
+  nvrmfb-macos-syntax:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone NVIDIA open-gpu-kernel-modules 615.78.08 (headers only build needs the tree)
+        run: git clone --depth 1 --branch 615.78.08 https://github.com/NVIDIA/open-gpu-kernel-modules.git ogkm
+      - name: Syntax check the framebuffer kext source (NVRMFB carries the issue #220 changes)
+        run: |
+          SDK=$(xcrun --show-sdk-path)
+          KHDR="$SDK/System/Library/Frameworks/Kernel.framework/Headers"
+          OGKM=$PWD/ogkm; NV="$OGKM/src/nvidia"; KMS="$OGKM/src/nvidia-modeset"
+          xcrun clang++ -arch x86_64 -fapple-kext -mkernel -nostdinc -I"$KHDR" \
+            -I"$PWD/kexts/NVRMFB" -I"$PWD/kexts/NVRMFB/fb" -I"$PWD/kexts/NVRM" -I"$PWD/kexts/NMHDA" \
+            -I"$KMS/os-interface/include" -I"$KMS/kapi/interface" -I"$KMS/kapi/include" \
+            -I"$OGKM/src/common/unix/nvidia-push/interface" -I"$KMS/interface" -I"$KMS/include" \
+            -I"$OGKM/src/common/unix/common/inc" -I"$OGKM/src/common/modeset" \
+            -I"$OGKM/src/common/unix/common/utils/interface" \
+            -DKERNEL -DKERNEL_PRIVATE -DDRIVER_PRIVATE -DAPPLE -DNeXT \
+            -std=c++17 -fno-rtti -fno-exceptions -fno-builtin -fno-common -O0 \
+            -fsyntax-only kexts/NVRMFB/fb/nvrm-fb.cpp
+      - name: Syntax check the NVRM KAPI portability layer
+        run: |
+          SDK=$(xcrun --show-sdk-path)
+          KHDR="$SDK/System/Library/Frameworks/Kernel.framework/Headers"
+          OGKM=$PWD/ogkm; NV="$OGKM/src/nvidia"; KMS="$OGKM/src/nvidia-modeset"
+          xcrun clang++ -arch x86_64 -fapple-kext -mkernel -nostdinc -I"$KHDR" \
+            -I"$PWD/kexts/NVRM" \
+            -I"$KMS/os-interface/include" -I"$KMS/kapi/interface" -I"$KMS/kapi/include" \
+            -I"$OGKM/src/common/unix/nvidia-push/interface" -I"$KMS/interface" -I"$KMS/include" \
+            -I"$OGKM/src/common/unix/common/inc" -I"$OGKM/src/common/modeset" \
+            -I"$OGKM/src/common/unix/common/utils/interface" \
+            -I"$NV/arch/nvalloc/unix/include" -I"$NV/arch/nvalloc/common/inc" \
+            -I"$OGKM/src/common/sdk/nvidia/inc" -I"$OGKM/src/common/sdk/nvidia/inc/hw" -I"$OGKM/src/common/inc" \
+            -I"$OGKM/src/common/shared/inc" -I"$NV/inc" -I"$NV/inc/os" -I"$NV/inc/kernel" -I"$NV/kernel/inc" -I"$NV/interface" \
+            -DKERNEL -DKERNEL_PRIVATE -DDRIVER_PRIVATE -DAPPLE -DNeXT \
+            -std=c++17 -fno-rtti -fno-exceptions -fno-builtin -fno-common -O0 \
+            -fsyntax-only kexts/NVRM/os-nvkms-xnu.cpp
