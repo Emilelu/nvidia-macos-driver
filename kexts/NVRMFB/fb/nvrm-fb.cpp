@@ -13,6 +13,7 @@
 #include <IOKit/IOCommandGate.h>
 #include <IOKit/IOLib.h>
 #include <sys/sysctl.h>
+#include <pexpert/pexpert.h>
 #include <kern/thread_call.h>
 #include <mach/mach_time.h>
 #include <IOKit/IODeviceMemory.h>
@@ -796,6 +797,27 @@ OSDefineMetaClassAndStructors(NVRMBootFB, IOFramebuffer)
 
 #define super IOFramebuffer
 
+// The flip result a refused request reports, by name: the bare number in "commit rejected" sent testers to the
+// NVIDIA headers (issue #220: "result 1" is INVALID_PARAMS, but nothing in the log says so).
+static const char *nvrmFlipResultName(int r)
+{
+    switch (r) {
+        case NV_KMS_FLIP_RESULT_SUCCESS:       return "success";
+        case NV_KMS_FLIP_RESULT_INVALID_PARAMS: return "invalid params";
+        case NV_KMS_FLIP_RESULT_IN_PROGRESS:   return "in progress";
+        default:                               return "unknown";
+    }
+}
+// -nvrmhead0only: the first mode set touches this framebuffer's head alone. By default a mode set also switches off
+// the heads no framebuffer of ours owns (see nvrmUnownedHeadsOff below); on a platform NVKMS's validation does not
+// know (issue #220: RTX 3060 on AMD, display stack armed, then every mode set and flip INVALID_PARAMS) that
+// combination is one more thing for the validator to refuse. This switch removes it from the first request.
+static bool nvrmHead0Only()
+{
+    static int v = -1;
+    if (v < 0) { char nb[8] = { 0 }; v = PE_parse_boot_argn("-nvrmhead0only", nb, sizeof nb) ? 1 : 0; }
+    return v != 0;
+}
 // The firmware can leave a display lit on a head we do not use (seen: HDMI-0 on head 2, while this driver drives it
 // from head 1). A commit that names only our head leaves that head as the firmware set it, and NVKMS then shuts it down
 // inside every one of our modesets ("TAKEOVER head 2 SHUTDOWN ... HDMI-0"): two heads on one connector, and the panel
@@ -1903,9 +1925,9 @@ NvBool NVRMNVDAFramebuffer::submitConfig(struct NvKmsKapiRequestedModeSetConfig 
         if (++fRejected <= 8 || (fRejected % 64) == 0) {
             const struct NvKmsKapiHeadRequestedConfig *h = &cfg->headRequestedConfig[fHead];
             const struct NvKmsKapiLayerRequestedConfig *p = &h->layerRequestedConfig[NVKMS_KAPI_LAYER_PRIMARY_IDX];
-            FBLOG("commit rejected on head %u result %d accepted %u (#%u) | heads 0x%x active %u mode/act/dpy chg %u%u%u "
+            FBLOG("commit rejected on head %u result %d (%s) accepted %u (#%u) | heads 0x%x active %u mode/act/dpy chg %u%u%u "
                   "primary surf %u chg %u src %ux%u dst %ux%u | cursor surf %u chg %u",
-                  fHead, (int)rep->flipResult, (unsigned)accepted, fRejected, cfg->headsMask,
+                  fHead, (int)rep->flipResult, nvrmFlipResultName((int)rep->flipResult), (unsigned)accepted, fRejected, cfg->headsMask,
                   (unsigned)h->modeSetConfig.bActive, (unsigned)h->flags.modeChanged, (unsigned)h->flags.activeChanged,
                   (unsigned)h->flags.displaysChanged, p->config.surface ? 1u : 0u, (unsigned)p->flags.surfaceChanged,
                   (unsigned)p->config.srcWidth, (unsigned)p->config.srcHeight, (unsigned)p->config.dstWidth,
@@ -2597,7 +2619,8 @@ bool NVRMNVDAFramebuffer::applyMode()
     lr->config.dstWidth = (NvU16)fRasterW; lr->config.dstHeight = (NvU16)fRasterH;
     lr->config.compParams.compMode = NVKMS_COMPOSITION_BLENDING_MODE_OPAQUE; lr->config.minPresentInterval = 1;
     lr->flags.surfaceChanged = lr->flags.srcXYChanged = lr->flags.srcWHChanged = lr->flags.dstXYChanged = lr->flags.dstWHChanged = NV_TRUE;
-    nvrmUnownedHeadsOff(cfg);
+    if (nvrmHead0Only()) FBLOG("applyMode: -nvrmhead0only set -- the first mode set touches head %u alone", fHead);
+    else nvrmUnownedHeadsOff(cfg);
     NvBool ok = submitConfig(cfg, rep, NV_TRUE, true);
     // A refused first mode set leaves WindowServer asserting in CGXMappedDisplayStart and crash-looping (an RTX 3060 at
     // 1920x1080, 2.1.0 and 2.2.0). First retry with the mode NVKMS validated for the same raster, when it differs from the
@@ -2628,11 +2651,24 @@ bool NVRMNVDAFramebuffer::applyMode()
         lr->flags.surfaceChanged = lr->flags.srcXYChanged = lr->flags.srcWHChanged = lr->flags.dstXYChanged =
             lr->flags.dstWHChanged = NV_TRUE;
         ok = submitConfig(cfg, rep, NV_TRUE, true);
-        FBLOG("applyMode: mode set refused; flip onto the firmware's running %ux%u mode on head %u -> %u (flipResult %d)",
-              fRasterW, fRasterH, fHead, (unsigned)ok, (int)rep->flipResult);
+        FBLOG("applyMode: mode set refused; flip onto the firmware's running %ux%u mode on head %u -> %u (flipResult %d %s)",
+              fRasterW, fRasterH, fHead, (unsigned)ok, (int)rep->flipResult, nvrmFlipResultName((int)rep->flipResult));
+        // Last resort: the full mode set again, but for this head alone. The first request also switched off the heads
+        // no framebuffer of ours owns (the refused #1 carried heads 0xf); the flip above carries this head alone but
+        // changes nothing but the surface. A single-head mode set -- full active/display/mode flags, no other head
+        // named -- is the one shape between the two that NVKMS has not seen (issue #220: display stack armed, then
+        // every mode set and flip INVALID_PARAMS on an AMD platform). The flags only re-arm what this config already
+        // carries: mode, display and surface were written into the zeroed cfg above.
+        if (!ok) {
+            nvu_zero(rep, sizeof *rep);
+            hr->flags.activeChanged = hr->flags.displaysChanged = hr->flags.modeChanged = NV_TRUE;
+            ok = submitConfig(cfg, rep, NV_TRUE, true);
+            FBLOG("applyMode: single-head mode set on head %u -> %u (flipResult %d %s)",
+                  fHead, (unsigned)ok, (int)rep->flipResult, nvrmFlipResultName((int)rep->flipResult));
+        }
     }
     fLastOk = (unsigned)ok; fFlipResult = (int)rep->flipResult;
-    FBLOG("applyModeSetConfig -> %u (flipResult %d)", ok, (int)rep->flipResult);
+    FBLOG("applyModeSetConfig -> %u (flipResult %d %s)", ok, (int)rep->flipResult, nvrmFlipResultName((int)rep->flipResult));
     if (ok && fKms->framebufferConsoleDisabled) {
         fKms->framebufferConsoleDisabled(fDev);
         FBLOG("framebufferConsoleDisabled() sent -- NVKMS releases the old GOP console");
