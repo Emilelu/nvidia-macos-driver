@@ -86,3 +86,79 @@ jobs:
             -DKERNEL -DKERNEL_PRIVATE -DDRIVER_PRIVATE -DAPPLE -DNeXT \
             -std=c++17 -fno-rtti -fno-exceptions -fno-builtin -fno-common -O0 \
             -fsyntax-only kexts/NVRM/os-nvkms-xnu.cpp
+
+  # Build the framebuffer kext this branch actually changes. NVRMFB is a single
+  # translation unit against OGKM 615.78.08 + repo headers (proven by the syntax
+  # job above) and links like NVAccel does; it needs no maintainer-local archive.
+  # The [kapi] reason lines live in NVRM/NVKMS and stay upstream-only; what this
+  # artifact carries is the behavioural half of the issue #220 workaround:
+  # named flipResults, the level-4 single-head fallback and -nvrmhead0only.
+  nvrmfb-build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone NVIDIA open-gpu-kernel-modules 615.78.08
+        run: git clone --depth 1 --branch 615.78.08 https://github.com/NVIDIA/open-gpu-kernel-modules.git ogkm
+      - name: Build NVRMFB.kext (macOS 15 and macOS 26/Tahoe variants)
+        run: |
+          set -e
+          SDK=$(xcrun --show-sdk-path)
+          KHDR="$SDK/System/Library/Frameworks/Kernel.framework/Headers"
+          OGKM=$PWD/ogkm; KMS="$OGKM/src/nvidia-modeset"
+          INCLUDES=(-I"$KHDR" \
+            -I"$PWD/kexts/NVRMFB" -I"$PWD/kexts/NVRMFB/fb" -I"$PWD/kexts/NVRM" -I"$PWD/kexts/NMHDA" \
+            -I"$KMS/os-interface/include" -I"$KMS/kapi/interface" -I"$KMS/kapi/include" \
+            -I"$OGKM/src/common/unix/nvidia-push/interface" -I"$KMS/interface" -I"$KMS/include" \
+            -I"$OGKM/src/common/unix/common/inc" -I"$OGKM/src/common/modeset" \
+            -I"$OGKM/src/common/unix/common/utils/interface" \
+            -I"$OGKM/kernel-open/common/inc" -I"$OGKM/src/common/sdk/nvidia/inc" \
+            -I"$OGKM/src/common/sdk/nvidia/inc/hw" -I"$OGKM/src/common/inc" -I"$OGKM/src/common/shared/inc")
+          COMMON=(-arch x86_64 -fapple-kext -mkernel -nostdinc "${INCLUDES[@]}" \
+            -DKERNEL -DKERNEL_PRIVATE -DDRIVER_PRIVATE -DAPPLE -DNeXT \
+            -std=c++17 -fno-rtti -fno-exceptions -fno-builtin -fno-common -O2)
+          LINK=(-arch x86_64 -fapple-kext -nostdlib -Xlinker -kext -lkmodc++ -lkmod -lcc_kext)
+          mkdir -p build/macos15/NVRMFB.kext/Contents/MacOS
+          xcrun clang++ "${COMMON[@]}" -c kexts/NVRMFB/fb/nvrm-fb.cpp -o build/macos15/nvrm-fb.o
+          xcrun clang++ "${LINK[@]}" build/macos15/nvrm-fb.o -o build/macos15/NVRMFB.kext/Contents/MacOS/NVRMFB
+          cp kexts/NVRMFB/fb/Info.plist build/macos15/NVRMFB.kext/Contents/Info.plist
+          codesign -f -s - --timestamp=none build/macos15/NVRMFB.kext
+          echo "macos15: $(stat -f %z build/macos15/NVRMFB.kext/Contents/MacOS/NVRMFB) B"
+          mkdir -p build/macos26/NVRMFB.kext/Contents/MacOS
+          xcrun clang++ "${COMMON[@]}" -DNM_TAHOE -c kexts/NVRMFB/fb/nvrm-fb.cpp -o build/macos26/nvrm-fb.o
+          xcrun clang++ "${LINK[@]}" build/macos26/nvrm-fb.o -o build/macos26/NVRMFB.kext/Contents/MacOS/NVRMFB
+          cp kexts/NVRMFB/fb/Info.plist build/macos26/NVRMFB.kext/Contents/Info.plist
+          codesign -f -s - --timestamp=none build/macos26/NVRMFB.kext
+          echo "macos26: $(stat -f %z build/macos26/NVRMFB.kext/Contents/MacOS/NVRMFB) B"
+          mkdir -p artifact
+          cp -R build/macos15/NVRMFB.kext artifact/NVRMFB-macos15.kext
+          cp -R build/macos26/NVRMFB.kext artifact/NVRMFB-macos26-tahoe.kext
+          cat > artifact/README-install.txt <<'EOF'
+          NVRMFB.kext with the issue #220 workaround (branch fix/issue-220-nvkms-mode-reject)
+
+          What this changes vs the stock 2.6.5 NVRMFB (default paths untouched):
+            - flip results are logged with names ("result 1 (invalid params)")
+            - level-4 fallback: if the mode set AND the flip onto the firmware mode are
+              both refused, one single-head full mode set is attempted
+            - boot-arg -nvrmhead0only: the first mode set leaves the heads no
+              framebuffer owns alone (helps some AMD-platform boards)
+
+          Install (macOS):
+            1. Keep the stock nullmoth 2.6.5 install (NVRM.kext etc. stay as they are).
+            2. sudo cp -R /Library/Extensions/NVRMFB.kext /Library/Extensions/NVRMFB.kext.bak
+            3. sudo cp -R NVRMFB-<your-macos>.kext /Library/Extensions/NVRMFB.kext
+            4. Re-run the package's install.sh (rebuilds the auxiliary kernel collection),
+               or: sudo kmutil install -v --volume-root / --update-all
+            5. Reboot.
+
+          Notes:
+            - This kext is ad-hoc signed (unsigned content). Loading it requires loose
+              SIP (csr-active-config with the untrusted-kexts bit, e.g. 0xA43).
+            - The [kapi] set-mode reason lines do NOT appear with this artifact; they
+              live in the NVKMS source and need an upstream release.
+            - If the boot gets worse, restore the .bak kext and rebuild the aux KC.
+          EOF
+      - name: Upload NVRMFB kexts
+        uses: actions/upload-artifact@v4
+        with:
+          name: NVRMFB-kexts-issue220
+          path: artifact/
