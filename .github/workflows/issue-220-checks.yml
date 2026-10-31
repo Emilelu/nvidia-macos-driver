@@ -24,11 +24,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Fetch the NVIDIA 615.78.08 NVKMS KAPI source
         run: |
-          mkdir -p ogkm/kapi/src
+          mkdir -p ogkm/a/kapi/src
           curl -fsSL --retry 3 \
             https://raw.githubusercontent.com/NVIDIA/open-gpu-kernel-modules/615.78.08/src/nvidia-modeset/kapi/src/nvkms-kapi.c \
-            -o ogkm/kapi/src/nvkms-kapi.c
-          wc -l ogkm/kapi/src/nvkms-kapi.c
+            -o ogkm/a/kapi/src/nvkms-kapi.c
+          wc -l ogkm/a/kapi/src/nvkms-kapi.c
       - name: Apply 615-setmode-reason.patch and confirm the reason lines land
         run: |
           cd ogkm
@@ -55,6 +55,8 @@ jobs:
             -I"$OGKM/src/common/unix/nvidia-push/interface" -I"$KMS/interface" -I"$KMS/include" \
             -I"$OGKM/src/common/unix/common/inc" -I"$OGKM/src/common/modeset" \
             -I"$OGKM/src/common/unix/common/utils/interface" \
+            -I"$OGKM/kernel-open/common/inc" -I"$OGKM/src/common/sdk/nvidia/inc" \
+            -I"$OGKM/src/common/sdk/nvidia/inc/hw" -I"$OGKM/src/common/inc" -I"$OGKM/src/common/shared/inc" \
             -DKERNEL -DKERNEL_PRIVATE -DDRIVER_PRIVATE -DAPPLE -DNeXT \
             -std=c++17 -fno-rtti -fno-exceptions -fno-builtin -fno-common -O0 \
             -fsyntax-only kexts/NVRMFB/fb/nvrm-fb.cpp
@@ -69,6 +71,8 @@ jobs:
             -I"$OGKM/src/common/unix/nvidia-push/interface" -I"$KMS/interface" -I"$KMS/include" \
             -I"$OGKM/src/common/unix/common/inc" -I"$OGKM/src/common/modeset" \
             -I"$OGKM/src/common/unix/common/utils/interface" \
+            -I"$OGKM/kernel-open/common/inc" -I"$OGKM/src/common/sdk/nvidia/inc" \
+            -I"$OGKM/src/common/sdk/nvidia/inc/hw" -I"$OGKM/src/common/inc" -I"$OGKM/src/common/shared/inc" \
             -I"$NV/arch/nvalloc/unix/include" -I"$NV/arch/nvalloc/common/inc" \
             -I"$OGKM/src/common/sdk/nvidia/inc" -I"$OGKM/src/common/sdk/nvidia/inc/hw" -I"$OGKM/src/common/inc" \
             -I"$OGKM/src/common/shared/inc" -I"$NV/inc" -I"$NV/inc/os" -I"$NV/inc/kernel" -I"$NV/kernel/inc" -I"$NV/interface" \
