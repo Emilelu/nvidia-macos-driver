@@ -188,7 +188,7 @@ jobs:
           cp -R kexts/NVRMFB-macos15.kext pkg/pkgroot/Library/Extensions/NVRMFB.kext
           # regenerate the manifest exactly the way the original was built:
           # regular files AND symlinks (shasum follows links), relative paths, sorted
-          (cd pkg/pkgroot && find . \( -type f -o -type l \) ! -name SHA256SUMS \
+          (cd pkg/pkgroot && find . -type f ! -name SHA256SUMS \
             | sed 's|^\./||' | sort | xargs sha256sum > SHA256SUMS)
           # gate: only NVRMFB lines may differ from the official manifest
           if diff sha-orig.txt pkg/pkgroot/SHA256SUMS | grep -v 'NVRMFB' | grep -Eq '^[<>]'; then
