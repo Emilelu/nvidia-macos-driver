@@ -135,7 +135,7 @@ jobs:
           cat > artifact/README-install.txt <<'EOF'
           NVRMFB.kext with the issue #220 workaround (branch fix/issue-220-nvkms-mode-reject)
 
-          What this changes vs the stock 2.6.5 NVRMFB (default paths untouched):
+          What this changes vs the stock 2.6.6 NVRMFB (default paths untouched):
             - flip results are logged with names ("result 1 (invalid params)")
             - level-4 fallback: if the mode set AND the flip onto the firmware mode are
               both refused, one single-head full mode set is attempted
@@ -143,7 +143,7 @@ jobs:
               framebuffer owns alone (helps some AMD-platform boards)
 
           Install (macOS):
-            1. Keep the stock nullmoth 2.6.5 install (NVRM.kext etc. stay as they are).
+            1. Keep the stock nullmoth 2.6.6 install (NVRM.kext etc. stay as they are).
             2. sudo cp -R /Library/Extensions/NVRMFB.kext /Library/Extensions/NVRMFB.kext.bak
             3. sudo cp -R NVRMFB-<your-macos>.kext /Library/Extensions/NVRMFB.kext
             4. Re-run the package's install.sh (rebuilds the auxiliary kernel collection),
@@ -163,7 +163,7 @@ jobs:
           name: NVRMFB-kexts-issue220
           path: artifact/
 
-  # Full release-style package: official 2.6.5 tarball with the fixed NVRMFB
+  # Full release-style package: official 2.6.6 tarball with the fixed NVRMFB
   # swapped in (NVRM/NVKMS stay stock - they need the maintainer's chain) and
   # SHA256SUMS regenerated so install.sh's --strict check still passes.
   full-package:
@@ -174,10 +174,10 @@ jobs:
         with:
           name: NVRMFB-kexts-issue220
           path: kexts
-      - name: Download the official 2.6.5 package
+      - name: Download the official 2.6.6 package
         run: |
           curl -fsSL --retry 3 -o pkg.tar.gz \
-            https://github.com/nullmoth/nvidia-macos-driver/releases/download/v2.6.5/nullmoth-nvidia-2.6.5.tar.gz
+            https://github.com/nullmoth/nvidia-macos-driver/releases/download/v2.6.6/nullmoth-nvidia-2.6.6.tar.gz
           sha256sum pkg.tar.gz
       - name: Swap the fixed NVRMFB.kext in and repackage
         run: |
@@ -201,10 +201,10 @@ jobs:
           chmod 755 pkg/pkgroot/install.sh
           find pkg/pkgroot -name '*.sh' -type f -exec chmod 755 {} +
           find pkg/pkgroot -path '*Contents/MacOS/*' -type f -exec chmod 755 {} +
-          tar czf nullmoth-nvidia-2.6.5-issue220-fix.tar.gz -C pkg pkgroot
-          ls -la nullmoth-nvidia-2.6.5-issue220-fix.tar.gz
+          tar czf nullmoth-nvidia-2.6.6-issue220-fix.tar.gz -C pkg pkgroot
+          ls -la nullmoth-nvidia-2.6.6-issue220-fix.tar.gz
       - name: Upload the full installer package
         uses: actions/upload-artifact@v4
         with:
-          name: nullmoth-nvidia-2.6.5-issue220-fix
-          path: nullmoth-nvidia-2.6.5-issue220-fix.tar.gz
+          name: nullmoth-nvidia-2.6.6-issue220-fix
+          path: nullmoth-nvidia-2.6.6-issue220-fix.tar.gz
